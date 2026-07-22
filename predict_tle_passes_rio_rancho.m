@@ -1,4 +1,4 @@
-function [passTable, tleTable] = predict_tle_passes_rio_rancho( ...
+function [passTable, tleTable] = predict_tle_passes_rio_rancho_v3( ...
     tleFile, startUTC, durationHours, minElevationDeg, downlinkHz)
 %PREDICT_TLE_PASSES_RIO_RANCHO Predict TLE passes over Rio Rancho, NM.
 %
@@ -51,9 +51,9 @@ function [passTable, tleTable] = predict_tle_passes_rio_rancho( ...
         downlinkHz (1,1) double = NaN
     end
 
-    validateattributes(minElevationDeg, {"numeric"}, ...
-        {"real","finite",">=",-90,"<=",90}, mfilename, ...
-        "minElevationDeg");
+    validateattributes(minElevationDeg, {'numeric'}, ...
+        {'real', 'finite', '>=', -90, '<=', 90}, mfilename, ...
+        'minElevationDeg');
     if ~(isnan(downlinkHz) || (isfinite(downlinkHz) && downlinkHz > 0))
         error("downlinkHz must be a positive frequency in hertz or NaN.");
     end
@@ -115,11 +115,9 @@ function [passTable, tleTable] = predict_tle_passes_rio_rancho( ...
 
     for k = 1:numel(sat)
         % Azimuth, elevation, and range of the satellite as observed from the
-        % ground station. The NED frame makes azimuth clockwise from north.
-        [az_deg, el_deg, range_m] = aer(gs, sat(k), timesUTC);
-        az_deg = az_deg(:);
-        el_deg = el_deg(:);
-        range_m = range_m(:);
+        % ground station. This helper calls aer once for each scalar datetime
+        % because some MATLAB releases reject a datetime vector as timeIn.
+        [az_deg, el_deg, range_m] = aerHistoryScalar(gs, sat(k), timesUTC);
 
         % Positive range rate means the satellite is receding. Therefore,
         % the one-way received Doppler shift is negative for positive rate.
@@ -334,6 +332,21 @@ function records = readTLEFile(tleFile)
     end
 end
 
+function [az_deg, el_deg, range_m] = aerHistoryScalar(gs, satObj, timesUTC)
+%AERHISTORYSCALAR Evaluate AER at one scalar datetime per call.
+
+    timesUTC = timesUTC(:);
+    nTimes = numel(timesUTC);
+    az_deg = zeros(nTimes, 1);
+    el_deg = zeros(nTimes, 1);
+    range_m = zeros(nTimes, 1);
+
+    for timeIndex = 1:nTimes
+        [az_deg(timeIndex), el_deg(timeIndex), range_m(timeIndex)] = ...
+            aer(gs, satObj, timesUTC(timeIndex));
+    end
+end
+
 function value = parseTLEExponent(field)
 %PARSETLEEXPONENT Parse implied-decimal TLE notation such as 29621-4.
 
@@ -541,12 +554,15 @@ function makeBestPassPlots(passTable, sat, gs, sampleTime_s, downlinkHz, c_mps)
     satIndex = passTable.SatelliteIndex(bestRow);
     aosUTC = passTable.AOS_UTC(bestRow);
     losUTC = passTable.LOS_UTC(bestRow);
-    duration_s = round(seconds(losUTC - aosUTC));
-    tUTC = (aosUTC + seconds(0:sampleTime_s:duration_s)).';
-
-    [~, el_deg, range_m] = aer(gs, sat(satIndex), tUTC);
-    el_deg = el_deg(:);
-    range_m = range_m(:);
+    % Build scalar sample times for the selected pass and evaluate AER one
+    % timestamp at a time for compatibility across MATLAB releases.
+    passSeconds = seconds(losUTC - aosUTC);
+    offsets_s = 0:sampleTime_s:passSeconds;
+    if isempty(offsets_s) || offsets_s(end) < passSeconds
+        offsets_s(end + 1) = passSeconds;
+    end
+    tUTC = (aosUTC + seconds(offsets_s)).';
+    [~, el_deg, range_m] = aerHistoryScalar(gs, sat(satIndex), tUTC);
     tLocal = tUTC;
     tLocal.TimeZone = "America/Denver";
 
